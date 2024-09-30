@@ -11,17 +11,16 @@ export default function Home() {
   const [url, setUrl] = useState('');
   const [fields, setFields] = useState('');
   const [scrapedData, setScrapedData] = useState<Record<string, string>[] | null>(null);
-  const [markdownText, setMarkdownText] = useState('');
 
   const handleScrape = async () => {
     const fieldArray = fields.split(',').map(field => field.trim());
     const result = await scrapeWebsite(url, fieldArray);
     
-    if (result.success) {
+    if (result.success && result.extractedData) {
       setScrapedData(result.extractedData);
-      setMarkdownText(result.text || '');
     } else {
       alert('Failed to scrape website');
+      setScrapedData(null);
     }
   };
 
@@ -56,15 +55,6 @@ export default function Home() {
         <div className="mt-8">
           <h2 className="text-xl font-semibold mb-2">Extracted Data</h2>
           <DataTable columns={columns} data={scrapedData} />
-        </div>
-      )}
-
-      {markdownText && (
-        <div className="mt-8">
-          <h2 className="text-xl font-semibold mb-2">Markdown Content</h2>
-          <pre className="bg-gray-100 p-4 rounded-md overflow-auto max-h-96">
-            {markdownText}
-          </pre>
         </div>
       )}
     </div>

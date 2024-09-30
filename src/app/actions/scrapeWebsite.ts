@@ -1,7 +1,6 @@
 'use server'
 
-import { load } from 'cheerio';
-import { convert } from 'html-to-text';
+import { load, CheerioAPI } from 'cheerio';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
@@ -18,71 +17,72 @@ export async function scrapeWebsite(url: string, fields: string[]) {
     console.log('[scrapeWebsite] Retrieved HTML content from response.');
 
     const $ = load(html);
+    // get only the body part
+    const body = $('body').html();
+    //remove svg tags
+    const bodyWithoutSvg = body?.replace(/<svg[^>]*>[\s\S]*?<\/svg>/gi, '');
+    // strip style and script tags
+    const bodyWithoutStyles = bodyWithoutSvg?.replace(/<style[^>]*>[\s\S]*?<\/style>|<script[^>]*>[\s\S]*?<\/script>/gi, '');
     console.log('[scrapeWebsite] Loaded HTML into Cheerio.');
 
-    const text = convert(html, { wordwrap: 130 });
-    console.log('[scrapeWebsite] Converted HTML to text.');
+    // Get selectors from GPT-4o-mini
+    console.log('[scrapeWebsite] Sending request to GPT-4o-mini with body:', bodyWithoutStyles);
+    const selectors = await getSelectorsFromGPT(bodyWithoutStyles || '', fields);
+    console.log('[scrapeWebsite] Received selectors from GPT:', selectors);
 
-    // Extract fields using GPT-4o-mini
-    const extractedData = await extractFieldsWithGPT(text, fields);
-    console.log('[scrapeWebsite] Extracted fields using GPT-4o-mini:', extractedData);
+    // Extract data using Cheerio
+    const extractedData = extractDataWithCheerio($, selectors);
+    console.log('[scrapeWebsite] Extracted data using Cheerio:', extractedData);
 
     console.log('[scrapeWebsite] Scraping completed successfully.');
-    return { success: true, text, extractedData };
+    return { success: true, extractedData };
   } catch (error) {
     console.error('[scrapeWebsite] Error scraping website:', error);
     return { success: false, error: 'Failed to scrape website' };
   }
 }
-async function extractFieldsWithGPT(content: string, fields: string[]) {
-  console.log('[extractFieldsWithGPT] Starting field extraction process.');
 
-  const schema = {
-    type: "object",
-    properties: {
-      records: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: Object.fromEntries(fields.map(field => [field, { type: "string" }])),
-          required: fields
-        }
-      }
-    },
-    required: ["records"]
-  };
-
-  console.log('[extractFieldsWithGPT] Constructed JSON schema:', JSON.stringify(schema, null, 2));
-
+async function getSelectorsFromGPT(html: string, fields: string[]) {
   const prompt = `
-    Extract multiple records with the following fields from the given content:
-    ${fields.join(', ')}
+    Given the following HTML content and list of fields to extract, provide the most appropriate CSS selector or XPath for each field. Return the result as a JSON object where the keys are the field names and the values are the selectors.
 
-    Content:
-    ${content}
+    Fields to extract: ${fields.join(', ')}
 
-    Please return the results according to the following JSON schema:
-    ${JSON.stringify(schema, null, 2)}
+    HTML content:
+    ${html} // Limiting to first 5000 characters to avoid token limits
 
-    Ensure all fields are present in each record, using "Not found" if a field couldn't be extracted.
-    Return an array of records, even if only one record is found.
+    Return format example:
+    {
+      "field1": "selector1",
+      "field2": "selector2"
+    }
   `;
-
-  console.log('[extractFieldsWithGPT] Generated prompt for OpenAI:', prompt);
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [{ role: "user", content: prompt }],
-    response_format: { type: "json_object" }
+    response_format: { type: "json_object" },
   });
 
-  console.log('[extractFieldsWithGPT] Received completion from OpenAI:', completion);
+  return JSON.parse(completion.choices[0].message.content || '{}');
+}
 
-  const result = completion.choices[0].message.content;
-  console.log('[extractFieldsWithGPT] Parsed result:', result);
+function extractDataWithCheerio($: CheerioAPI, selectors: Record<string, string>) {
+  const extractedData: Record<string, string>[] = [{}];
 
-  const records = JSON.parse(result || '{"records": []}').records;
-  console.log('[extractFieldsWithGPT] Extracted records:', records);
+  for (const [field, selector] of Object.entries(selectors)) {
+    const elements = $(selector);
+    if (elements.length > 0) {
+      elements.each((index: number, element: cheerio.Element) => {
+        if (!extractedData[index]) {
+          extractedData[index] = {};
+        }
+        extractedData[index][field] = $(element).text().trim() || 'Not found';
+      });
+    } else {
+      extractedData[0][field] = 'Not found';
+    }
+  }
 
-  return records;
+  return extractedData;
 }
